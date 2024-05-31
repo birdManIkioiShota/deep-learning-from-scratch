@@ -66,6 +66,59 @@ class Affine:
         dx = dx.reshape(*self.original_x_shape)  # 入力データの形状に戻す（テンソル対応）
         return dx
 
+class Affine_VeLoRA:
+    def __init__(self, W: np.ndarray, b: np.ndarray, M: int=28, use_ema: bool=False, beta: float=0.99):
+        self.W = W
+        self.b = b
+        self.dW = None
+        self.db = None
+
+        # VaLoRA Params
+        self.M = M
+        self.bs = None
+        self.dim = None
+        self.zp = None
+        self.v = None
+        
+        # EMA parameter
+        self.use_ema = use_ema
+        self.beta = beta
+
+    def forward(self, x: np.ndarray):
+        out = np.dot(x, self.W)
+        out = out + self.b
+
+        self.bs, self.dim = x.shape
+
+        # group
+        x = x.reshape((self.bs, self.dim // self.M, self.M))
+
+        # create v
+        if not self.use_ema:
+            # thesis
+            if self.v is None:
+                self.v = np.mean(x, axis=(0, 1)).reshape((self.M, 1))
+        else:
+            # use EMA
+            if self.v is None:
+                self.v = np.mean(x, axis=(0, 1)).reshape((self.M, 1))
+            else:
+                self.v *= self.beta
+                self.v += (1.0 - self.beta) * np.mean(x, axis=(0, 1)).reshape((self.M, 1))
+
+        self.zp = np.dot(x, self.v) # compress
+
+        return out
+
+    def backward(self, dout: np.ndarray):
+        zhat = np.dot(self.zp, self.v.T) # reconstruct
+        zhat = zhat.reshape((self.bs, self.dim)) # ungroup
+
+        dx = np.dot(dout, self.W.T)
+        self.dW = np.dot(zhat.T, dout)
+        self.db = np.sum(dout, axis=0)
+
+        return dx
 
 class SoftmaxWithLoss:
     def __init__(self):
